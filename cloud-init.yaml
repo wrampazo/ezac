@@ -1,0 +1,145 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - openvpn
+  - iptables-persistent
+  - openssl
+
+write_files:
+  - path: /etc/openvpn/server/server.conf
+    content: |
+      port 1194
+      proto udp
+      dev tun
+
+      # Self-signed server certificate (no PKI, no CA hierarchy)
+      ca   /etc/openvpn/server/vpn.crt
+      cert /etc/openvpn/server/vpn.crt
+      key  /etc/openvpn/server/vpn.key
+
+      # ECDH key exchange — no DH parameters needed
+      dh none
+
+      server 10.8.0.0 255.255.255.0
+      ifconfig-pool-persist /var/log/openvpn/ipp.txt
+      push "redirect-gateway def1 bypass-dhcp"
+      push "dhcp-option DNS 8.8.8.8"
+      push "dhcp-option DNS 8.8.4.4"
+      keepalive 10 120
+      cipher AES-256-GCM
+      auth SHA256
+      user nobody
+      group nogroup
+      persist-key
+      persist-tun
+      status /var/log/openvpn/openvpn-status.log
+      verb 3
+
+      # Password-only authentication via PAM — no client certificates required
+      plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login
+      verify-client-cert none
+      username-as-common-name
+    owner: root:root
+    permissions: '0600'
+
+  - path: /etc/pam.d/openvpn
+    content: |
+      auth    required   pam_unix.so    shadow    nodelay
+      account required   pam_unix.so
+    owner: root:root
+    permissions: '0644'
+
+  - path: /usr/local/bin/setup-openvpn.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      SERVER_DIR=/etc/openvpn/server
+      mkdir -p "$SERVER_DIR" /var/log/openvpn
+
+      # Self-signed server cert — no PKI, no easy-rsa, no CA chain
+      openssl req -x509 -newkey rsa:2048 \
+        -keyout "$SERVER_DIR/vpn.key" \
+        -out    "$SERVER_DIR/vpn.crt" \
+        -days 3650 -nodes \
+        -subj "/CN=vpn-server"
+      chmod 600 "$SERVER_DIR/vpn.key"
+
+      # Self-signed client cert. The server uses `verify-client-cert none`, so
+      # this is NOT validated server-side (PAM password is the real auth) — but
+      # OpenVPN clients (incl. Apple TV's OpenVPN Connect) require <cert>/<key>
+      # blocks in the profile, so we generate an independent pair to embed.
+      openssl req -x509 -newkey rsa:2048 \
+        -keyout "$SERVER_DIR/client.key" \
+        -out    "$SERVER_DIR/client.crt" \
+        -days 3650 -nodes \
+        -subj "/CN=vpn-client"
+      chmod 600 "$SERVER_DIR/client.key"
+
+      # Read VPN credentials injected by the deploy script (base64-encoded
+      # so any special characters survive YAML/shell unchanged)
+      VPN_USER=$(base64 -d < /root/.vpn_user.b64)
+      VPN_PASS=$(base64 -d < /root/.vpn_pass.b64)
+
+      if ! id "$VPN_USER" &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$VPN_USER"
+      fi
+      printf '%s:%s\n' "$VPN_USER" "$VPN_PASS" | chpasswd
+      echo "VPN user '${VPN_USER}' configured." >> /var/log/cloud-init-vpn.log
+
+      # Clean up credential seed files immediately after use
+      rm -f /root/.vpn_user.b64 /root/.vpn_pass.b64
+
+      # Enable IP forwarding
+      echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-openvpn.conf
+      sysctl -p /etc/sysctl.d/99-openvpn.conf
+
+      # NAT so VPN clients can reach the internet
+      IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+      iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$IFACE" -j MASQUERADE
+      netfilter-persistent save
+
+      systemctl enable openvpn-server@server
+      systemctl start  openvpn-server@server
+
+      # Write a ready-to-use client config with all three inline blocks:
+      #   <ca>   server cert, so the client can verify the server
+      #   <cert> client cert (required by OpenVPN clients; not validated server-side)
+      #   <key>  client key
+      SERVER_IP=$(curl -sf https://api.ipify.org || hostname -I | awk '{print $1}')
+      CA_CERT=$(cat "$SERVER_DIR/vpn.crt")
+      CLIENT_CERT=$(cat "$SERVER_DIR/client.crt")
+      CLIENT_KEY=$(cat "$SERVER_DIR/client.key")
+      cat > /etc/openvpn/client.ovpn <<OVPN
+      client
+      dev tun
+      proto udp
+      remote ${SERVER_IP} 1194
+      resolv-retry infinite
+      nobind
+      persist-key
+      persist-tun
+      cipher AES-256-GCM
+      auth SHA256
+      verb 3
+      auth-user-pass
+      <ca>
+      ${CA_CERT}
+      </ca>
+      <cert>
+      ${CLIENT_CERT}
+      </cert>
+      <key>
+      ${CLIENT_KEY}
+      </key>
+      OVPN
+      chmod 644 /etc/openvpn/client.ovpn
+      echo "Client config written to /etc/openvpn/client.ovpn" >> /var/log/cloud-init-vpn.log
+    owner: root:root
+    permissions: '0700'
+
+runcmd:
+  - /usr/local/bin/setup-openvpn.sh

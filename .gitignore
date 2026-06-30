@@ -1,0 +1,12 @@
+# Secrets and generated VPN material — NEVER commit (contain private keys / certs)
+*.ovpn
+*.key
+*.crt
+*.pem
+
+# Local deployment artifacts (contain real infra IPs / usernames)
+deploy-results.txt
+
+# Editor / tooling local state
+.claude/
+.DS_Store
