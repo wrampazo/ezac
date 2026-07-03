@@ -50,13 +50,38 @@ scp -i ~/.ssh/ezac_id_rsa azureuser@<VM-IP>:/etc/openvpn/client.ovpn ./client.ov
 Import `client.ovpn` into any OpenVPN client. Enter the username and password you chose during deployment when prompted.
 
 **Recommended clients:**
-- macOS/iOS/tvOS: [OpenVPN Connect](https://openvpn.net/client/)
+- macOS: **openvpn CLI** (see below) — most reliable; the OpenVPN Connect GUI has a known bug on macOS (see [Troubleshooting](#troubleshooting))
+- iOS/tvOS: [OpenVPN Connect](https://openvpn.net/client/)
 - Windows: [OpenVPN Connect](https://openvpn.net/client/) or [OpenVPN GUI](https://openvpn.net/community-downloads/)
 - Android: OpenVPN for Android
 
 **Apple TV:** Import `client.ovpn` via the OpenVPN Connect app on tvOS. Authentication is username + password only — no certificates required on the client.
 
 > OpenVPN setup runs on first boot and takes ~2 minutes. If the connection is refused immediately after deploy, wait and retry.
+
+### Connect from macOS (recommended: openvpn CLI)
+
+On macOS the OpenVPN Connect GUI can fail with `Error calling protect() method on socket` (see [Troubleshooting](#troubleshooting)). The classic `openvpn` CLI is not affected. This repo ships a helper that installs it and connects:
+
+```bash
+chmod +x install-openvpn-cli.sh
+./install-openvpn-cli.sh ~/Downloads/client.ovpn --connect
+```
+
+**Prerequisites (checked by the script):** macOS, and [Homebrew](https://brew.sh). The script installs the `openvpn` formula, locates your `client.ovpn`, and connects. When you see `Initialization Sequence Completed`, you are connected. Leave the terminal open; Ctrl-C disconnects.
+
+You can also install without connecting (omit `--connect`) and run the printed `sudo openvpn --config …` command yourself.
+
+## Multiple users / simultaneous connections
+
+Authentication is per **system user** on the VM. To add another VPN user, SSH to the VM and create a Linux account — no service restart needed (PAM checks credentials live):
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin newuser
+sudo passwd newuser
+```
+
+The same `client.ovpn` is used by everyone (the embedded client cert is **not** validated server-side — `verify-client-cert none`). The only per-user secret is the password. Two machines on the **same public IP / network** can connect at the same time as long as they use **different usernames** (the server uses `username-as-common-name`, so the usernames are distinct identities and NAT gives each machine a different source port). Using the *same* username on two machines simultaneously would require `duplicate-cn` on the server.
 
 ## SSH Access
 
@@ -79,6 +104,36 @@ For TLS, the VM generates two independent self-signed certs (no CA chain, no PKI
 - a **client** cert/key, embedded as `<cert>`/`<key>` because OpenVPN clients (including Apple TV's OpenVPN Connect) require these blocks in a profile even when the server ignores them.
 
 If you need to rebuild `client.ovpn` on an existing VM, run `regenerate-client.sh` on the VM via `sudo`.
+
+## Troubleshooting
+
+### macOS OpenVPN Connect: "Error calling protect() method on socket"
+
+**Symptom:** the OpenVPN Connect GUI shows a *Connection timeout* dialog reading `Error calling protect() method on socket : 30 times`. It happens for **any** username/password because the failure occurs on the client *before* credentials are ever sent — so creating new VPN users makes no difference.
+
+**Cause:** `protect()` keeps OpenVPN Connect's own control socket outside the tunnel. On macOS this relies on the app's network/system extension; when that extension fails to load or was never approved, `protect()` fails repeatedly and the client times out before reaching the server. It is a client/OS-side issue, not a server or auth problem.
+
+**Fix:** stop using the GUI on macOS and use the `openvpn` CLI instead:
+
+```bash
+# 1. Remove OpenVPN Connect completely
+chmod +x uninstall-openvpn-connect.sh
+./uninstall-openvpn-connect.sh
+
+# 2. Install the CLI and connect
+chmod +x install-openvpn-cli.sh
+./install-openvpn-cli.sh ~/Downloads/client.ovpn --connect
+```
+
+If you prefer to keep the GUI: in **System Settings → General → Login Items & Extensions → Network Extensions** (older macOS: **Privacy & Security**) approve the blocked "OpenVPN" extension, fully quit the app, reboot, and retry.
+
+### uninstall-openvpn-connect.sh — app not removed ("Permission denied")
+
+**Fixed.** OpenVPN Connect's PKG installer places the app in a **root-owned** folder `/Applications/OpenVPN Connect/` (alongside its own *Uninstall OpenVPN Connect.app*). An earlier version of the uninstaller tried to delete it as the normal user and printed `Permission denied` for every file. The script now removes the application with `sudo` (step 3) and also clears the leftover **Dock icon** (step 4). If you hit the old behaviour, either re-run the current script or remove it manually:
+
+```bash
+sudo rm -rf "/Applications/OpenVPN Connect"
+```
 
 ## Architecture
 
@@ -111,3 +166,6 @@ VM (ezac-vm)  Ubuntu 22.04 LTS, Standard_B1s
 | `deploy.ps1` | Windows deployment (PowerShell + Bicep) |
 | `main.bicep` | Azure resource definitions |
 | `cloud-init.yaml` | VM bootstrap: installs OpenVPN, generates self-signed cert, configures PAM auth |
+| `regenerate-client.sh` | Rebuild `client.ovpn` on an existing VM (run on the VM via `sudo`) |
+| `install-openvpn-cli.sh` | macOS client: install the `openvpn` CLI and connect (works around the OpenVPN Connect `protect()` bug) |
+| `uninstall-openvpn-connect.sh` | macOS client: completely remove the OpenVPN Connect GUI app, its data, Dock icon and extensions |
