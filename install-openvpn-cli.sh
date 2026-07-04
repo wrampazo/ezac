@@ -127,7 +127,12 @@ echo
 echo "[4/4] Ready."
 if [ -n "$OVPN_FILE" ] && [ "$CONNECT" -eq 1 ]; then
   echo "  Connecting now (Ctrl-C to disconnect)..."
-  echo "  You will be prompted for your VPN username and password."
+  echo
+  echo "  Two sets of credentials are needed, in this order:"
+  echo "    1. 'Password:'            -> your macOS login password (sudo)"
+  echo "    2. 'Enter Auth Username:' -> your VPN username"
+  echo "       'Enter Auth Password:' -> your VPN password"
+  echo
   echo "  Look for: 'Initialization Sequence Completed'"
   echo
   exec sudo "$OPENVPN_BIN" --config "$OVPN_FILE"
@@ -136,12 +141,12 @@ fi
 echo "════════════════════════════════════════════════════════"
 echo " Install complete. To connect:"
 if [ -n "$OVPN_FILE" ]; then
-  echo "   sudo $OPENVPN_BIN --config \"$OVPN_FILE\""
+  echo "   ./connect-vpn.sh"
   echo
-  echo " Or re-run this script with --connect to start it now:"
-  echo "   ./install-openvpn-cli.sh \"$OVPN_FILE\" --connect"
+  echo " Or directly:"
+  echo "   sudo $OPENVPN_BIN --config \"$OVPN_FILE\""
 else
-  echo "   sudo $OPENVPN_BIN --config <path-to-client.ovpn>"
+  echo "   ./connect-vpn.sh <path-to-client.ovpn>"
 fi
 echo
 echo " When connected you will see 'Initialization Sequence Completed'."

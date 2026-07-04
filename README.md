@@ -94,7 +94,13 @@ chmod +x install-openvpn-cli.sh
 
 **Prerequisites (checked by the script):** macOS, and [Homebrew](https://brew.sh). The script installs the `openvpn` formula, locates your `client.ovpn`, and connects. When you see `Initialization Sequence Completed`, you are connected. Leave the terminal open; Ctrl-C disconnects.
 
-You can also install without connecting (omit `--connect`) and run the printed `sudo openvpn --config …` command yourself.
+Once the CLI is installed, day-to-day connections don't need the installer — just run:
+
+```bash
+./connect-vpn.sh
+```
+
+It finds `client.ovpn` automatically (next to the script, or `~/Downloads`) and connects. You'll be asked for **two** passwords, in order: your **macOS login password** (the plain `Password:` prompt — OpenVPN needs `sudo` to create the tunnel) and then your **VPN username/password** (`Enter Auth Username:` / `Enter Auth Password:`).
 
 ## Multiple users / simultaneous connections
 
@@ -209,4 +215,5 @@ VM (ezac-vm)  Ubuntu 22.04 LTS, Standard_B1s
 | `cloud-init.yaml` | VM bootstrap: installs OpenVPN, generates self-signed cert, configures PAM auth |
 | `regenerate-client.sh` | Rebuild `client.ovpn` on an existing VM (run on the VM via `sudo`) |
 | `install-openvpn-cli.sh` | macOS client: install the `openvpn` CLI and connect (works around the OpenVPN Connect `protect()` bug) |
+| `connect-vpn.sh` | Connect to the VPN with the already-installed `openvpn` CLI (day-to-day use) |
 | `uninstall-openvpn-connect.sh` | macOS client: completely remove the OpenVPN Connect GUI app, its data, Dock icon and extensions |
