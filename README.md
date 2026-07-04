@@ -1,6 +1,6 @@
 # Ezac — Azure OpenVPN Deployment
 
-Deploys a secure Linux VM on Azure running OpenVPN with **password-only authentication** (PAM). No certificates, no PKI. Designed for Apple TV and any OpenVPN client that supports username/password auth.
+Deploys a secure Linux VM on Azure running OpenVPN with **password-only authentication** (PAM). No certificates, no PKI. Works with any OpenVPN client that supports username/password auth — and reaches the Apple TV through a router-level VPN client (see [Apple TV](#apple-tv)), since tvOS has no official OpenVPN app.
 
 Only SSH (22) and OpenVPN (1194/UDP) are exposed.
 
@@ -52,11 +52,34 @@ Import `client.ovpn` into any OpenVPN client. Enter the username and password yo
 
 **Recommended clients:**
 - macOS: **openvpn CLI** (see below) — most reliable; the OpenVPN Connect GUI has a known bug on macOS (see [Troubleshooting](#troubleshooting))
-- iOS/tvOS: [OpenVPN Connect](https://openvpn.net/client/)
+- iOS: [OpenVPN Connect](https://openvpn.net/client/)
 - Windows: [OpenVPN Connect](https://openvpn.net/client/) or [OpenVPN GUI](https://openvpn.net/community-downloads/)
 - Android: OpenVPN for Android
+- Apple TV: **no OpenVPN client exists for tvOS** — route it through the router instead (see [Apple TV](#apple-tv))
 
-**Apple TV:** Import `client.ovpn` via the OpenVPN Connect app on tvOS. Authentication is username + password only — no certificates required on the client.
+## Apple TV
+
+There is no OpenVPN Connect app for tvOS (and no official WireGuard app either), so the Apple TV cannot run `client.ovpn` itself. Two working options:
+
+### Option A — UniFi gateway as VPN client (recommended, free)
+
+If the network runs a UniFi gateway (UDM Pro or similar), the **router** connects to the VPN and only chosen devices are routed through it. No app on the TV, no purchases:
+
+1. Create a dedicated VPN user for the router on the VM (each simultaneous connection needs its own username):
+   ```bash
+   ssh -i ~/.ssh/ezac_id_rsa azureuser@<VM-IP>
+   sudo useradd --system --no-create-home --shell /usr/sbin/nologin udmpro
+   sudo passwd udmpro
+   ```
+2. In the UniFi Network app: **Settings → VPN → VPN Client → Create New**, type **OpenVPN**, upload `client.ovpn`, and enter the `udmpro` username/password.
+3. Route only the Apple TV through it: **Settings → Routing → Policy-Based Routes → Create Entry** — Source: the Apple TV device, Destination: Any, Interface: the VPN Client created above.
+4. Verify on the TV (e.g., open a streaming app or speed-test app and confirm the region/IP changed). Everything else on the network keeps its normal route.
+
+OpenVPN on a UDM Pro tops out around 100–300 Mbps — far more than any stream needs.
+
+### Option B — Passepartout app on the TV (~US$25)
+
+[Passepartout](https://apps.apple.com/us/app/passepartout-vpn-client/id1433648537) is an open-source tvOS VPN client that supports OpenVPN with username/password. Apple TV support is a one-time in-app purchase. Import `client.ovpn` in the free iPhone app and let iCloud sync deliver it to the TV. Useful if the Apple TV lives on a network whose router you don't control.
 
 > OpenVPN setup runs on first boot and takes ~2 minutes. If the connection is refused immediately after deploy, wait and retry.
 
