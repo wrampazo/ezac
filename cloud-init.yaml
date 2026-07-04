@@ -7,6 +7,7 @@ packages:
   - openvpn
   - iptables-persistent
   - openssl
+  - unattended-upgrades
 
 write_files:
   - path: /etc/openvpn/server/server.conf
@@ -29,7 +30,10 @@ write_files:
       push "dhcp-option DNS 8.8.8.8"
       push "dhcp-option DNS 8.8.4.4"
       keepalive 10 120
-      cipher AES-256-GCM
+      # data-ciphers supersedes the deprecated `cipher` directive (OpenVPN 2.5+);
+      # the fallback covers clients that don't negotiate (NCP)
+      data-ciphers AES-256-GCM:AES-128-GCM
+      data-ciphers-fallback AES-256-GCM
       auth SHA256
       user nobody
       group nogroup
@@ -47,8 +51,23 @@ write_files:
 
   - path: /etc/pam.d/openvpn
     content: |
-      auth    required   pam_unix.so    shadow    nodelay
-      account required   pam_unix.so
+      # pam_faillock: lock a user out for 15 minutes after 5 failed attempts.
+      # The password is the only client secret (no client certs), so
+      # brute-force resistance lives here. Stack per pam_faillock(8) EXAMPLES.
+      auth     required                pam_faillock.so preauth silent deny=5 unlock_time=900
+      auth     [success=1 default=bad] pam_unix.so shadow
+      auth     [default=die]           pam_faillock.so authfail deny=5 unlock_time=900
+      auth     sufficient              pam_faillock.so authsucc deny=5 unlock_time=900
+      account  required                pam_unix.so
+    owner: root:root
+    permissions: '0644'
+
+  # Keep the VM patched: apply security updates automatically.
+  # (package_upgrade above only patches once, at first boot.)
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
     owner: root:root
     permissions: '0644'
 
@@ -90,8 +109,12 @@ write_files:
       printf '%s:%s\n' "$VPN_USER" "$VPN_PASS" | chpasswd
       echo "VPN user '${VPN_USER}' configured." >> /var/log/cloud-init-vpn.log
 
-      # Clean up credential seed files immediately after use
+      # Clean up credential seed files immediately after use, plus the copies
+      # of the injected cloud-init/customData that Azure leaves on disk
+      # (root-only files, but no reason to keep recoverable secrets around)
       rm -f /root/.vpn_user.b64 /root/.vpn_pass.b64
+      rm -f /var/lib/waagent/ovf-env.xml /var/lib/waagent/CustomData
+      find /var/lib/cloud/instances -name 'user-data.txt*' -delete 2>/dev/null || true
 
       # Enable IP forwarding
       echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-openvpn.conf
@@ -136,8 +159,14 @@ write_files:
       ${CLIENT_KEY}
       </key>
       OVPN
-      chmod 644 /etc/openvpn/client.ovpn
-      echo "Client config written to /etc/openvpn/client.ovpn" >> /var/log/cloud-init-vpn.log
+      chmod 600 /etc/openvpn/client.ovpn
+
+      # Copy the profile into the admin user's home so the deploy script can
+      # scp it down without sudo. 'azureuser' is the fixed admin username set
+      # in main.bicep. Written last: its presence signals setup is complete.
+      install -o azureuser -g azureuser -m 600 \
+        /etc/openvpn/client.ovpn /home/azureuser/client.ovpn
+      echo "Client config written to /etc/openvpn/client.ovpn and /home/azureuser/client.ovpn" >> /var/log/cloud-init-vpn.log
     owner: root:root
     permissions: '0700'
 

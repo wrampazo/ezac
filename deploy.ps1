@@ -81,11 +81,13 @@ Write-Info "Selected region: $Location"
 Write-Info "Finding an available VM size in '$Location' (one moment)..."
 # Preferred order: cheapest first. Default list-skus (no --all) already
 # excludes capacity/subscription-restricted sizes, so anything returned is deployable.
+# All sizes here must support Gen2 images + Trusted Launch (the template
+# enables both). A_v2 and Fs-v1 sizes were removed: they are Gen1-only and
+# the deployment would fail with them.
 $PreferredSizes = @(
     "Standard_B1s",    "Standard_B1ms",   "Standard_B2s",    "Standard_B2ms",
-    "Standard_B4ms",   "Standard_A1_v2",  "Standard_A2_v2",  "Standard_F1s",
-    "Standard_F2s_v2", "Standard_D2s_v3", "Standard_D2as_v4","Standard_D2s_v4",
-    "Standard_D2s_v5", "Standard_E2s_v3", "Standard_DS1_v2"
+    "Standard_B4ms",   "Standard_F2s_v2", "Standard_D2s_v3", "Standard_D2as_v4",
+    "Standard_D2s_v4", "Standard_D2s_v5", "Standard_E2s_v3", "Standard_DS1_v2"
 )
 
 # Single API call: list all VM sizes usable in this region for this subscription.
@@ -104,7 +106,6 @@ if (-not $VmSize) {
     Write-Err "None of the preferred sizes are available in '$Location'.`n  Some sizes that ARE available here: $Suggestions`n  Re-run, pick a different region, or add one of the above to `$PreferredSizes."
 }
 Write-Info "VM size: $VmSize"
-Write-Info "VM size: $VmSize"
 
 # ── credentials ───────────────────────────────────────────────────────────────
 
@@ -113,17 +114,26 @@ do {
     $VpnUser = Read-Host "OpenVPN username"
 } while ([string]::IsNullOrWhiteSpace($VpnUser))
 
+# The password is the only client secret (no client certificates), so a
+# minimum length is enforced. 16+ characters recommended.
+$PassOk = $false
 do {
-    $VpnPass1 = Read-Host "OpenVPN password" -AsSecureString
-    $VpnPass2 = Read-Host "Confirm password" -AsSecureString
+    $VpnPass1 = Read-Host "OpenVPN password (min 12 characters)" -AsSecureString
     $Plain1   = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
                     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($VpnPass1))
+    if ($Plain1.Length -lt 12) {
+        Write-Host "Password must be at least 12 characters. Try again."
+        continue
+    }
+    $VpnPass2 = Read-Host "Confirm password" -AsSecureString
     $Plain2   = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
                     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($VpnPass2))
-    if ($Plain1 -ne $Plain2 -or [string]::IsNullOrEmpty($Plain1)) {
-        Write-Host "Passwords do not match or are empty. Try again."
+    if ($Plain1 -ne $Plain2) {
+        Write-Host "Passwords do not match. Try again."
+    } else {
+        $PassOk = $true
     }
-} while ($Plain1 -ne $Plain2 -or [string]::IsNullOrEmpty($Plain1))
+} while (-not $PassOk)
 
 $VpnPass = $Plain1
 
@@ -204,6 +214,42 @@ $DeployOutput = az deployment group create `
 
 $VmIp = $DeployOutput.properties.outputs.vmPublicIp.value
 
+# ── download client config ────────────────────────────────────────────────────
+
+# The VM writes ~/client.ovpn as the LAST step of OpenVPN setup, so a
+# successful download also confirms the VPN service is up. A dedicated
+# known_hosts file keeps redeploys (new host key, possibly reused IP) from
+# tripping over stale entries in the default known_hosts.
+$OvpnLocal  = Join-Path $ScriptDir 'client.ovpn'
+$KnownHosts = "$env:USERPROFILE\.ssh\ezac_known_hosts"
+
+# Native commands write progress to stderr; under 'Stop' that would throw.
+$PrevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+
+ssh-keygen -R $VmIp -f $KnownHosts 2>$null | Out-Null
+
+Write-Info "Waiting for the VM to finish OpenVPN setup (usually 2-3 minutes)..."
+$Downloaded = $false
+for ($i = 0; $i -lt 24; $i++) {
+    scp -q -i $SshKeyPath `
+        -o "UserKnownHostsFile=$KnownHosts" `
+        -o StrictHostKeyChecking=accept-new `
+        -o ConnectTimeout=10 `
+        "azureuser@${VmIp}:client.ovpn" $OvpnLocal 2>$null
+    if ($LASTEXITCODE -eq 0) { $Downloaded = $true; break }
+    Write-Host -NoNewline "."
+    Start-Sleep -Seconds 15
+}
+Write-Host ""
+$ErrorActionPreference = $PrevEap
+
+if ($Downloaded) {
+    Write-Info "Client config downloaded to: $OvpnLocal"
+} else {
+    Write-Info "Could not download the client config yet (the VM may still be setting up)."
+}
+
 # ── output ────────────────────────────────────────────────────────────────────
 
 Write-Host ""
@@ -220,6 +266,13 @@ Write-Host "   Protocol : Password authentication"
 Write-Host "   Username : $VpnUser"
 Write-Host "   Password : (the password you entered)"
 Write-Host ""
-Write-Host " Note: OpenVPN may take 2-3 minutes after first boot"
-Write-Host "       to finish setup on the VM."
+if ($Downloaded) {
+    Write-Host " Client config: $OvpnLocal"
+    Write-Host ""
+    Write-Host " Next step: import client.ovpn into your OpenVPN client"
+    Write-Host " and log in with the username/password above."
+} else {
+    Write-Host " Download the client config once the VM finishes setup:"
+    Write-Host "   scp -i $SshKeyPath azureuser@${VmIp}:client.ovpn `"$OvpnLocal`""
+}
 Write-Host "════════════════════════════════════════════════════════" -ForegroundColor Green

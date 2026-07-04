@@ -74,11 +74,13 @@ info "Finding an available VM size in '$LOCATION' (one moment)..."
 # Preferred order: cheapest first. Default list-skus (no --all) already
 # excludes sizes that are capacity/subscription-restricted in this region,
 # so anything returned here is actually deployable.
+# All sizes here must support Gen2 images + Trusted Launch (the template
+# enables both). A_v2 and Fs-v1 sizes were removed: they are Gen1-only and
+# the deployment would fail with them.
 PREFERRED_SIZES=(
   "Standard_B1s"    "Standard_B1ms"   "Standard_B2s"    "Standard_B2ms"
-  "Standard_B4ms"   "Standard_A1_v2"  "Standard_A2_v2"  "Standard_F1s"
-  "Standard_F2s_v2" "Standard_D2s_v3" "Standard_D2as_v4" "Standard_D2s_v4"
-  "Standard_D2s_v5" "Standard_E2s_v3" "Standard_DS1_v2"
+  "Standard_B4ms"   "Standard_F2s_v2" "Standard_D2s_v3" "Standard_D2as_v4"
+  "Standard_D2s_v4" "Standard_D2s_v5" "Standard_E2s_v3" "Standard_DS1_v2"
 )
 
 # Single API call: list all VM sizes usable in this region for this subscription.
@@ -111,11 +113,17 @@ while [[ -z "$VPN_USER" ]]; do
   read -rp "Username cannot be empty. OpenVPN username: " VPN_USER
 done
 
+# The password is the only client secret (no client certificates), so a
+# minimum length is enforced. 16+ characters recommended.
 while true; do
-  read -rsp "OpenVPN password: " VPN_PASS; echo
+  read -rsp "OpenVPN password (min 12 characters): " VPN_PASS; echo
+  if (( ${#VPN_PASS} < 12 )); then
+    echo "Password must be at least 12 characters. Try again."
+    continue
+  fi
   read -rsp "Confirm password: " VPN_PASS2; echo
-  [[ "$VPN_PASS" == "$VPN_PASS2" && -n "$VPN_PASS" ]] && break
-  echo "Passwords do not match or are empty. Try again."
+  [[ "$VPN_PASS" == "$VPN_PASS2" ]] && break
+  echo "Passwords do not match. Try again."
 done
 
 # ── SSH key ───────────────────────────────────────────────────────────────────
@@ -211,6 +219,38 @@ DEPLOYMENT_OUTPUT=$(az deployment group create \
 
 VM_IP=$(printf '%s' "$DEPLOYMENT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['properties']['outputs']['vmPublicIp']['value'])")
 
+# ── download client config ────────────────────────────────────────────────────
+
+# The VM writes /home/azureuser/client.ovpn as the LAST step of OpenVPN setup,
+# so a successful download also confirms the VPN service is up. A dedicated
+# known_hosts file keeps redeploys (new host key, possibly reused IP) from
+# tripping over stale entries in ~/.ssh/known_hosts.
+OVPN_LOCAL="$SCRIPT_DIR/client.ovpn"
+KNOWN_HOSTS="$HOME/.ssh/ezac_known_hosts"
+ssh-keygen -R "$VM_IP" -f "$KNOWN_HOSTS" &>/dev/null || true
+
+info "Waiting for the VM to finish OpenVPN setup (usually 2-3 minutes)..."
+DOWNLOADED=0
+for _ in $(seq 1 24); do
+  if scp -q -i "$SSH_KEY_PATH" \
+       -o UserKnownHostsFile="$KNOWN_HOSTS" \
+       -o StrictHostKeyChecking=accept-new \
+       -o ConnectTimeout=10 \
+       "azureuser@${VM_IP}:client.ovpn" "$OVPN_LOCAL" 2>/dev/null; then
+    DOWNLOADED=1
+    break
+  fi
+  printf '.'
+  sleep 15
+done
+echo ""
+if [[ "$DOWNLOADED" == "1" ]]; then
+  chmod 600 "$OVPN_LOCAL"
+  info "Client config downloaded to: $OVPN_LOCAL"
+else
+  info "Could not download the client config yet (the VM may still be setting up)."
+fi
+
 # ── output ────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -227,6 +267,15 @@ echo "   Protocol : Password authentication"
 echo "   Username : $VPN_USER"
 echo "   Password : (the password you entered)"
 echo ""
-echo " Note: OpenVPN may take 2-3 minutes after first boot"
-echo "       to finish setup on the VM."
+if [[ "$DOWNLOADED" == "1" ]]; then
+  echo " Client config: $OVPN_LOCAL"
+  echo ""
+  echo " Next steps:"
+  echo "   macOS:            ./install-openvpn-cli.sh \"$OVPN_LOCAL\" --connect"
+  echo "   Other platforms:  import client.ovpn into your OpenVPN client"
+  echo "                     and log in with the username/password above."
+else
+  echo " Download the client config once the VM finishes setup:"
+  echo "   scp -i ${SSH_KEY_PATH} azureuser@${VM_IP}:client.ovpn \"$OVPN_LOCAL\""
+fi
 echo "════════════════════════════════════════════════════════"

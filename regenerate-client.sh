@@ -49,8 +49,14 @@ ${CLIENT_KEY}
 </key>
 OVPN
 
-chmod 644 /etc/openvpn/client.ovpn
-echo "Rebuilt /etc/openvpn/client.ovpn:"
+chmod 600 /etc/openvpn/client.ovpn
+
+# Copy into the admin user's home so it can be scp'd down without sudo
+# ('azureuser' is the fixed admin username set in main.bicep).
+install -o azureuser -g azureuser -m 600 \
+  /etc/openvpn/client.ovpn /home/azureuser/client.ovpn
+
+echo "Rebuilt /etc/openvpn/client.ovpn (copy in /home/azureuser/client.ovpn):"
 grep -c "BEGIN CERTIFICATE" /etc/openvpn/client.ovpn | xargs echo "  certificate blocks:"
 grep -c "BEGIN PRIVATE KEY" /etc/openvpn/client.ovpn | xargs echo "  private key blocks:"
 echo "  remote: ${SERVER_IP} 1194"

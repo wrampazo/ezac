@@ -14,7 +14,8 @@ param adminUsername string = 'azureuser'
 @secure()
 param adminSshPublicKey string
 
-@description('Base64-encoded cloud-init configuration')
+@description('Base64-encoded cloud-init configuration. Contains the injected VPN credentials, so it must never appear in deployment history.')
+@secure()
 param cloudInitBase64 string
 
 var vnetName = '${prefix}-vnet'
@@ -118,6 +119,13 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-07-01' = {
   properties: {
     hardwareProfile: {
       vmSize: vmSize
+    }
+    securityProfile: {
+      securityType: 'TrustedLaunch'
+      uefiSettings: {
+        secureBootEnabled: true
+        vTpmEnabled: true
+      }
     }
     storageProfile: {
       imageReference: {

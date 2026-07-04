@@ -110,9 +110,10 @@ fi
 
 if [ -z "$OVPN_FILE" ] || [ ! -f "$OVPN_FILE" ]; then
   echo "  No client.ovpn found (looked in ./ and ~/Downloads)."
-  echo "  Retrieve it from the VM first, e.g.:"
-  echo "    scp -i ~/.ssh/ezac_id_rsa azureuser@<VM-IP>:/etc/openvpn/client.ovpn ~/Downloads/client.ovpn"
-  echo "  then re-run:  ./install-openvpn-cli.sh ~/Downloads/client.ovpn"
+  echo "  deploy.sh downloads it automatically next to itself; to fetch it"
+  echo "  manually from the VM:"
+  echo "    scp -i ~/.ssh/ezac_id_rsa azureuser@<VM-IP>:client.ovpn ./client.ovpn"
+  echo "  then re-run:  ./install-openvpn-cli.sh ./client.ovpn"
   # Not a fatal error for the install itself — the CLI is ready to use.
   OVPN_FILE=""
 else
